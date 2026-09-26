@@ -40,7 +40,7 @@
 本仓库**不包含** `Drivers/`（ST 的 HAL 库与 CMSIS），以保持仓库轻量。
 **首次编译前必须先补上**，方法二选一：
 
-**方法一：用 CubeMX 重新生成（推荐）**
+用 CubeMX 重新生成
 
 1. 用 STM32CubeMX 打开根目录的 `timetable.ioc`
 2. 确认 `Project Manager → Toolchain/IDE` 选的是 **CMake**
@@ -49,13 +49,6 @@
 CubeMX 会生成 `Drivers/` 目录，并补齐 `CMakeLists.txt` / `main.c` 等文件的
 框架部分（你的应用代码在 `USER CODE` 块内，不受影响）。
 
-**方法二：从任意 STM32F1 的 CubeMX 工程拷贝**
-
-把别的 F103 工程里的 `Drivers/` 目录整个复制过来即可
-（需要 `STM32F1xx_HAL_Driver` + `CMSIS` 两部分）。
-
-> ⚠️ 生成后请检查 `CMakeLists.txt` 的 `target_sources` 段 —— CubeMX 可能把它
-> 重置，确认里面有 `Core/Src/epd.c` 等用户源文件（被清空就补回）。
 
 ### 第 1 步：编译
 
@@ -138,12 +131,9 @@ timetable.c  课表业务        （只用 epd 的画图接口）
 
 ## 中文字库
 
-**当前只带 ASCII 字库**，课程名先用英文占位。要显示中文课程名，需要额外字库：
+**当前只带 ASCII 字库**，课程名先用英文占位。要显示中文课程名，需要额外字库
 
-**为什么不能直接用全量中文字库**：GB2312 的 16×16 点阵约 **260KB**，
-而 STM32F103C8T6 只有 **64KB Flash**，放不下。
-
-**推荐方案 —— 子集字库**（最省 Flash，最简单）：
+**推荐方案 —— 子集字库**：
 
 1. 列出你的课表里用到的**所有汉字**（通常几百个）
 2. 用取模工具（如 PCtoLCD2002）或 Python 生成 16×16 点阵
@@ -151,24 +141,3 @@ timetable.c  课表业务        （只用 epd 的画图接口）
 4. 加一个 `FONT_GetChinese()` 类似的取模接口
 
 其他方案：外挂 SPI Flash 存全字库；或上位机动态下发字模。
-
----
-
-## 参考资料
-
-- SSD1619A 数据手册（命令表、应用电路、升压拓扑）
-- SSD1680 数据手册（命令集与此 IC 高度兼容，可对照）
-- [gitee.com/uYuToo/minieink](https://gitee.com/uYuToo/minieink)（驱动板参考）
-- [立创开源：墨水屏 24PIN 通用转接板](https://oshwhub.com/iosetting/e-paper)（GPL 3.0）
-
----
-
-## 许可
-
-本项目代码以 MIT 许可发布，详见 [LICENSE](LICENSE)。
-
-注意：`Drivers/` 下为 STMicroelectronics 的 HAL 库与 CMSIS，版权归 ST；
-`startup_stm32f103xb.s`、`STM32F103XX_FLASH.ld` 来自 ST 的生成模板，
-遵循其原始许可。
-
----
