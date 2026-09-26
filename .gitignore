@@ -1,0 +1,35 @@
+# ---- 构建产物 ----
+build/
+cmake-build-*/
+*.o
+*.obj
+*.elf
+*.bin
+*.hex
+*.map
+*.list
+
+# ---- ST HAL 库 / CMSIS（不随仓库分发，用 CubeMX 生成）----
+# clone 后需先用 CubeMX 打开 timetable.ioc 重新生成代码，才会产生 Drivers/。
+# 生成后即可正常编译。
+Drivers/
+
+# ---- CubeMX / IDE ----
+.mxproject
+*.ioc.bak
+.vscode/
+.idea/
+*.uvguix.*
+*.uvoptx
+*.uvprojx
+
+# ---- 系统 ----
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ---- 编辑器临时文件 ----
+*~
+*.swp
+*.orig
+*.rej
