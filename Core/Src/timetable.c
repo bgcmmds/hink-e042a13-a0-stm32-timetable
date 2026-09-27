@@ -17,9 +17,8 @@
 #include "textlayout.h"
 #include "font.h"
 #include "font_cn.h"
-#include "log.h"
 #include <string.h>
-#include <stdio.h>     /* snprintf：拼「第N周」 */
+#include <stdio.h>     /* snprintf：拼「N周」 */
 
 /* 全局课表实例 */
 static Timetable_t g_tt;
@@ -42,11 +41,6 @@ static void draw_glyph(uint16_t code, int x, int y, void *ctx);
 /* ══════════════════════════════════════════════════════════════════════════
  * ① 数据模型
  * ═══════════════════════════════════════════════════════════════════════════*/
-
-Timetable_t* TT_Get(void)
-{
-    return &g_tt;
-}
 
 void TT_Clear(void)
 {
@@ -167,7 +161,8 @@ static void draw_week_badge(int week)
     draw_header_cell(0, TT_LEFT_W, 0, TT_HEAD_H, buf);
 }
 
-void TT_DrawFrame(void)
+/* 画整个表格框架：白底 + 反白条带 + 网格线 + 表头文字。不刷新屏。 */
+static void draw_frame(void)
 {
     /* ① 白底 */
     EPD_Clear(1);
@@ -188,7 +183,7 @@ void TT_DrawFrame(void)
                          kDayName[d]);
     }
 
-    /* ⑤ 行头文字：节次（左列居中）*/
+    /* ⑥ 行头文字：节次（左列居中）*/
     for (int p = 0; p < TT_PERIODS; p++) {
         draw_header_cell(0, TT_LEFT_W, TT_HEAD_H + p * TT_CELL_H, TT_CELL_H,
                          kPeriodName[p]);
@@ -317,7 +312,8 @@ static void draw_bubble(const Course_t *c)
     draw_bubble_text(c->name, room, tx, by, tw, rows_fit);
 }
 
-void TT_DrawContent(void)
+/* 把所有课程画成气泡。不刷新屏。 */
+static void draw_content(void)
 {
     for (int i = 0; i < g_tt.count; i++) {
         draw_bubble(&g_tt.items[i]);
@@ -331,8 +327,8 @@ void TT_DrawContent(void)
 
 void TT_Show(void)
 {
-    TT_DrawFrame();
-    TT_DrawContent();
+    draw_frame();
+    draw_content();
     EPD_Display();
     EPD_Sleep();
 }

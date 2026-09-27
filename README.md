@@ -201,7 +201,7 @@ Core/
 └── Inc/                  对应头文件
 
 debug/                    诊断工具（默认不编译，见下）
-├── epd_test.c            EPD_Diag()：逐步报告引脚/BUSY，定位屏不亮
+├── epd_test.c            EPD_TestPattern() 自检画面 / EPD_Diag() 串口诊断
 
 tools/                    PC 端工具（与固件无关）
 ├── server.py             网页编辑器的本地服务
@@ -255,8 +255,9 @@ cmake --preset Debug -DENABLE_DEBUG_TOOLS=ON
 cmake --build build/Debug
 ```
 
-然后在 `main.c` 里调用 `EPD_Diag()`，它会逐步执行复位/初始化/写显存/刷新，
-把每一步的引脚电平、BUSY 耗时、SPI 状态打到串口（USART1，115200 8N1）。
+然后在 `main.c` 里调用 `EPD_TestPattern()`（连刷 4 张画面：全白/全黑/四角外框/
+竖条纹，肉眼判读）或 `EPD_Diag()`（逐步执行复位/初始化/写显存/刷新，
+把引脚电平、BUSY 耗时、SPI 状态打到串口 USART1，115200 8N1）。
 
 常见现象对照：
 

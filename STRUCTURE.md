@@ -59,7 +59,7 @@ Core/
 └── Inc/                    对应头文件
 
 debug/                      调试工具（默认不编译，见下）
-├── epd_test.c              EPD_Diag()：逐步报告引脚/BUSY，定位屏不亮
+├── epd_test.c              EPD_TestPattern() 自检画面 / EPD_Diag() 串口诊断
 └── epd_test.h
 
 tools/                      课表编辑器 + 字库生成（PC 上跑，与固件无关）
@@ -87,7 +87,7 @@ Drivers/                    ST HAL 库 + CMSIS（不入库，用 CubeMX 生成�
 EPD_Init();          // ① 初始化屏
 MyCourses_Load();    // ② 填课表数据
 TT_Show();           // ③ 绘制 + 刷新 + 睡眠
-```text
+```
 
 墨水屏断电保持画面，所以**刷一次就够**，主循环里不需要反复刷。
 以后要接实时更新（切周次、日期变化），在循环里检测到变化再调 `TT_Show()`。
@@ -166,13 +166,13 @@ course|1|3|2|体育|操场
 
 ### 不用工具也行
 
-直接编辑 `tools/timetable_data.txt`，然后在工具里按 `s` 重新生成，
-或者手写 [`Core/Src/my_courses.c`](Core/Src/my_courses.c)（但别改——它是生成的）：
+直接编辑 `tools/timetable_data.txt`，然后在网页里点「生成代码」，
+或者手写 [`Core/Src/my_courses.c`](Core/Src/my_courses.c)（网页生成时会被覆盖）：
 
 ```c
 TT_SetWeek(3);
 TT_AddCourse(0, 0, 2, "高等数学", "主楼302");
-```text
+```
 
 ### 手动重新生成字库
 
@@ -181,14 +181,14 @@ TT_AddCourse(0, 0, 2, "高等数学", "主楼302");
 ```bash
 # 1. 把新字加进 tools/chars.txt（直接写汉字，重复无妨）
 # 2. 重新生成
-python tools/font_export.py C:/Windows/Fonts/Deng.ttf \
+python tools/font_export.py <你的中文字体> \
        tools/chars.txt Core/Src/font_cn.c FontCN --size 16
 # 3. 重新编译
 cmake --build build/Debug
 ```
 
 依赖：`pip install freetype-py`。
-当前字库 70 字，约 2KB。要换字体（如微软雅黑 `msyh.ttc`）改第一个参数即可。
+当前字库 77 字，约 2.5KB。要换字体（如微软雅黑 `msyh.ttc`）改第一个参数即可。
 
 ---
 
@@ -200,8 +200,10 @@ cmake --build build/Debug
 ```bash
 cmake --preset Debug -DENABLE_DEBUG_TOOLS=ON
 cmake --build build/Debug
-# 然后在 main.c 里调用 EPD_Diag();
-```text
+# 然后在 main.c 里调用 EPD_TestPattern() 或 EPD_Diag();
+```
+
+`EPD_TestPattern()` 连刷 4 张画面（全白/全黑/四角外框/竖条纹），肉眼判读。
 
 `EPD_Diag()` 会逐步执行复位/初始化/写显存/刷新，并把每一步的：
 - 各控制引脚实际电平（DC/CS/RST/BUSY）
@@ -224,4 +226,4 @@ openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
 > **注意**：`Drivers/` 不入库。首次编译前需用 CubeMX 打开 `timetable.ioc`
 > 重新生成代码（Toolchain 选 CMake），详见 README.md。
 
-当前占用：Flash 21KB / 64KB，RAM 18KB / 20KB（显存 15KB 占大头）。
+当前占用：Flash 约 20.5KB / 64KB，RAM 约 18KB / 20KB（显存 15KB 占大头）。

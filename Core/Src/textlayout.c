@@ -19,7 +19,9 @@
 #define ADV_ASCII FONT_ASCII_ADV      /* 含 1px 字距 */
 #define ADV_WIDE (FONT_CN_W + 1)
 
-uint16_t TL_NextChar(const uint8_t *p, int *nbytes)
+/* 解码一个 UTF-8 字符。返回 Unicode 码点；*nbytes 回填字节数。
+ * 非法/不支持的编码统一返回 0xFFFD（替换字符），由调用方跳过。 */
+static uint16_t TL_NextChar(const uint8_t *p, int *nbytes)
 {
     uint8_t c = p[0];
     if (c < 0x80) {                                  /* ASCII */

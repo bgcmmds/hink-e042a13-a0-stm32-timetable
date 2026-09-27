@@ -12,7 +12,7 @@
   *
   *  依据：
   *    1) SSD1619A 数据手册 §7 命令表
-  *       —— 已逐条核对 0x11/0x12/0x20/0x21/0x22/0x24/0x26/0x3C/0x44/0x45/0x4E/0x4F
+  *       —— 已逐条核对 0x11/0x12/0x20/0x22/0x24/0x26/0x44/0x45/0x4E/0x4F
   *    2) 已实测点亮同规格 4.2" 屏（GDEH042Z96 兼容）的开源驱动实现，
   *       命令用法与手册命令表逐条吻合。
   *
@@ -23,28 +23,27 @@
 #include "epd.h"
 #include "font.h"      /* ASCII 8x16 字库 */
 #include "font_cn.h"   /* 16x16 中文字库（tools/font_export.py 生成） */
-#include "log.h"       /* 串口打点 */
 #include "main.h"      /* CubeMX 生成的引脚宏（EPD_*_Pin / EPD_*_GPIO_Port） */
 #include <string.h>
 
 /* ── 硬件 SPI 句柄（由 spi.c 定义）──────────────────────────────────────────*/
 extern SPI_HandleTypeDef hspi1;
 
-/* ── 命令定义（SSD1619A 手册 §7 命令表）─────────────────────────────────────*/
-#define EPD_CMD_DRIVER_OUTPUT_CTRL   0x01   /* Driver Output control  (MUX/扫描方向) */
+/* ── 命令定义（SSD1619A 手册 §7 命令表）─────────────────────────────────────
+ * 只列出本驱动实际用到的。手册里其余命令（0x01 驱动输出、0x21 更新控制 1、
+ * 0x3C 边框波形等）本驱动走 IC 的 OTP 默认值，不单独配置。
+ * -------------------------------------------------------------------------*/
+#define EPD_CMD_DEEP_SLEEP           0x10   /* Deep Sleep mode */
 #define EPD_CMD_DATA_ENTRY_MODE      0x11   /* Data Entry mode setting */
 #define EPD_CMD_SW_RESET             0x12   /* SW RESET */
 #define EPD_CMD_MASTER_ACTIVATION    0x20   /* Master Activation */
-#define EPD_CMD_DISPLAY_UPDATE_CTRL1 0x21   /* Display Update Control 1 */
 #define EPD_CMD_DISPLAY_UPDATE_CTRL2 0x22   /* Display Update Control 2（刷新触发） */
 #define EPD_CMD_WRITE_RAM_BW         0x24   /* Write RAM (BW)  1=白 0=黑 */
 #define EPD_CMD_WRITE_RAM_RED        0x26   /* Write RAM (RED) 黑白用法填 0x00 */
-#define EPD_CMD_BORDER_WAVEFORM      0x3C   /* Border Waveform Control */
 #define EPD_CMD_SET_RAM_X_RANGE      0x44   /* Set RAM X address start/end */
 #define EPD_CMD_SET_RAM_Y_RANGE      0x45   /* Set RAM Y address start/end */
 #define EPD_CMD_SET_RAM_X_COUNTER    0x4E   /* Set RAM X address counter */
 #define EPD_CMD_SET_RAM_Y_COUNTER    0x4F   /* Set RAM Y address counter */
-#define EPD_CMD_DEEP_SLEEP           0x10   /* Deep Sleep mode */
 
 /* 显存：1 bit/像素，1=白 0=黑。400/8*300 = 15000 字节 */
 static uint8_t epd_buffer[EPD_BUF_SIZE];
@@ -289,59 +288,4 @@ int16_t EPD_DrawChinese(int16_t x, int16_t y, uint16_t code, uint8_t color)
         }
     }
     return FONT_CN_W;
-}
-
-/* ── 硬件自检：4 张测试画面 ──────────────────────────────────────────────────
- * 每张停 3 秒。判读方法：
- *   ① 全白刷不出来        → SPI 接线 / CS / 供电 / BS1 模式
- *   ② 白黑颠倒            → 显存极性（把 EPD_Display 里的数据取反）
- *   ③ 四角/边框偏位       → 分辨率或 RAM 窗口设置
- *   ④ 竖条纹变横纹        → 显存行对齐问题
- * -------------------------------------------------------------------------*/
-void EPD_TestPattern(void)
-{
-    /* ★ 必须先初始化：复位屏 + SW RESET + 设数据入口/窗口/光标。
-     *   漏这一步，EPD_Display() 发出的命令屏根本不会理（RST 还停在低电平）。*/
-    EPD_Init();
-
-    /* ① 全白 */
-    LOG(">>> [1/4] 全白\r\n");
-    EPD_Clear(1);
-    EPD_Display();
-    HAL_Delay(3000);
-
-    /* ② 全黑 */
-    LOG(">>> [2/4] 全黑\r\n");
-    EPD_Clear(0);
-    EPD_Display();
-    HAL_Delay(3000);
-
-    /* ③ 四角 + 中心黑块 + 外框 */
-    LOG(">>> [3/4] 四角+外框\r\n");
-    EPD_Clear(1);
-    EPD_FillRect(0,   0,   20, 20, 0);
-    EPD_FillRect(380, 0,   20, 20, 0);
-    EPD_FillRect(0,   280, 20, 20, 0);
-    EPD_FillRect(380, 280, 20, 20, 0);
-    EPD_FillRect(190, 140, 20, 20, 0);
-    EPD_DrawRect(0, 0, EPD_WIDTH, EPD_HEIGHT, 0);
-    EPD_Display();
-    HAL_Delay(3000);
-
-    /* ④ 竖条纹（每 8 像素一个字节，0xF0/0x0F 交替）*/
-    LOG(">>> [4/4] 竖条纹\r\n");
-    uint8_t *buf = epd_buffer;
-    for (int16_t y = 0; y < EPD_HEIGHT; y++) {
-        for (int16_t xb = 0; xb < EPD_WIDTH / 8; xb++) {
-            buf[y * (EPD_WIDTH / 8) + xb] = (xb & 1) ? 0x0F : 0xF0;
-        }
-    }
-    EPD_Display();
-    HAL_Delay(3000);
-
-    /* 收尾：全白 + 睡眠 */
-    LOG(">>> 自检结束，进睡眠\r\n");
-    EPD_Clear(1);
-    EPD_Display();
-    EPD_Sleep();
 }

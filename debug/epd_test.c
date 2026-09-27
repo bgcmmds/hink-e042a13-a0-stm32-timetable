@@ -168,3 +168,58 @@ void EPD_Diag(void)
     LOG("========================================\r\n");
 }
 
+/* ── 硬件自检：4 张测试画面 ──────────────────────────────────────────────────
+ * 每张停 3 秒，靠肉眼判读：
+ *   ① 全白刷不出来        → SPI 接线 / CS / 供电 / BS1 模式
+ *   ② 白黑颠倒            → 显存极性（把数据取反）
+ *   ③ 四角/边框偏位       → 分辨率或 RAM 窗口设置
+ *   ④ 竖条纹变横纹        → 显存行对齐问题
+ * -------------------------------------------------------------------------*/
+void EPD_TestPattern(void)
+{
+    /* ★ 必须先初始化：复位屏 + SW RESET + 设数据入口/窗口/光标。
+     *   漏这一步，EPD_Display() 发的命令屏根本不会理（RST 还停在低电平）。*/
+    EPD_Init();
+
+    /* ① 全白 */
+    LOG(">>> [1/4] 全白\r\n");
+    EPD_Clear(1);
+    EPD_Display();
+    HAL_Delay(3000);
+
+    /* ② 全黑 */
+    LOG(">>> [2/4] 全黑\r\n");
+    EPD_Clear(0);
+    EPD_Display();
+    HAL_Delay(3000);
+
+    /* ③ 四角 + 中心黑块 + 外框：验证坐标系与边界 */
+    LOG(">>> [3/4] 四角+外框\r\n");
+    EPD_Clear(1);
+    EPD_FillRect(0,   0,   20, 20, 0);
+    EPD_FillRect(380, 0,   20, 20, 0);
+    EPD_FillRect(0,   280, 20, 20, 0);
+    EPD_FillRect(380, 280, 20, 20, 0);
+    EPD_FillRect(190, 140, 20, 20, 0);
+    EPD_DrawRect(0, 0, EPD_WIDTH, EPD_HEIGHT, 0);
+    EPD_Display();
+    HAL_Delay(3000);
+
+    /* ④ 竖条纹：8 像素一个周期（4 白 4 黑），验证显存位序与行对齐。
+     *    用公开绘图接口画，不去动驱动内部的显存数组。 */
+    LOG(">>> [4/4] 竖条纹\r\n");
+    for (int xb = 0; xb < EPD_WIDTH / 8; xb++) {
+        uint8_t color = (xb & 1) ? 0 : 1;            /* 交替起始极性 */
+        EPD_FillRect(xb * 8,     0, 4, EPD_HEIGHT, color);
+        EPD_FillRect(xb * 8 + 4, 0, 4, EPD_HEIGHT, !color);
+    }
+    EPD_Display();
+    HAL_Delay(3000);
+
+    /* 收尾：全白 + 睡眠 */
+    LOG(">>> 自检结束，进睡眠\r\n");
+    EPD_Clear(1);
+    EPD_Display();
+    EPD_Sleep();
+}
+

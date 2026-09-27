@@ -50,8 +50,7 @@ void EPD_Display(void);
 /* 刷新后进深度睡眠省电（墨水屏断电保持画面，静态显示不耗电） */
 void EPD_Sleep(void);
 
-/* ★ 硬件自检用：依次显示 4 种测试画面，每张停 3 秒。
- *   用来验证 SPI 接线、极性、分辨率、显存对齐是否正确。 */
-void EPD_TestPattern(void);
+/* 注：硬件自检（EPD_TestPattern）与串口诊断（EPD_Diag）都在 debug/ 下，
+ * 默认不编译。见 debug/epd_test.h。 */
 
 #endif /* __EPD_H */
