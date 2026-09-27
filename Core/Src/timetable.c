@@ -1,127 +1,334 @@
 /**
   ******************************************************************************
   * @file    timetable.c
-  * @brief   课程表布局与绘制（分类：业务模块）
+  * @brief   课程表业务逻辑与绘制（分类：业务模块）
   *
   *          只负责「往显存上画」，不负责刷新（刷新由 EPD_Display 做）。
-  *          这样分层的好处：布局改动不影响屏驱动，屏驱动改动不影响布局。
+  *          文本排版交给 textlayout.c，本文件只管课表几何与样式。
+  *
+  *          文件分区：
+  *            ① 数据模型      —— 课的增删查、冲突检测
+  *            ② 框架绘制      —— 网格线、表头、节次名
+  *            ③ 气泡绘制      —— 圆角框 + 色条 + 文字
+  *            ④ 对外接口      —— TT_Show（数据由 my_courses.c 提供）
   ******************************************************************************
   */
 #include "timetable.h"
+#include "textlayout.h"
 #include "font.h"
+#include "font_cn.h"
+#include "log.h"
 #include <string.h>
+#include <stdio.h>     /* snprintf：拼「第N周」 */
 
-/* 课表数据实例（本模块私有；通过 TT_SetCourse / TT_Clear 访问） */
+/* 全局课表实例 */
 static Timetable_t g_tt;
 
-/* 表头：星期（ASCII 占位，等中文字库到位后换「周一」等） */
-static const char *kDayName[TT_DAYS] = { "Mon", "Tue", "Wed", "Thu", "Fri" };
+/* 表头：星期。文字宽度按 2 个汉字算（见 draw_header）。 */
+static const char *const kDayName[TT_DAYS] =
+    { "周一", "周二", "周三", "周四", "周五" };
 
-/* 行头：节次（同样先 ASCII 占位） */
-static const char *kPeriodName[TT_PERIODS] = { "AM1", "AM2", "PM1", "PM2", "Eve" };
+/* 行头：节次。3 个汉字，宽度见 draw_header。 */
+static const char *const kPeriodName[TT_PERIODS] =
+    { "上午一", "上午二", "下午一", "下午二", "晚上" };
+
+static const char *const kNoPlace = "-";     /* 地点缺失时的占位符 */
+
+/* 绘制回调：把单个码点画到显存（textlayout 只负责算位置，落笔在这里）。
+ * ctx 传 color（0=黑 1=白）。定义见 ③ 气泡绘制。*/
+static void draw_glyph(uint16_t code, int x, int y, void *ctx);
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ① 数据模型
+ * ═══════════════════════════════════════════════════════════════════════════*/
+
+Timetable_t* TT_Get(void)
+{
+    return &g_tt;
+}
 
 void TT_Clear(void)
 {
     memset(&g_tt, 0, sizeof(g_tt));
+    g_tt.week = 1;                                   /* 默认第 1 周 */
 }
 
-void TT_SetCourse(uint8_t day, uint8_t period, const char *name)
+void TT_SetWeek(uint8_t week)
 {
-    if (day >= TT_DAYS || period >= TT_PERIODS) return;
-    /* 用 strncpy 并确保结尾有 '\0'，防止超长串溢出 */
-    strncpy(g_tt.course[day][period], name, TT_COURSE_MAX - 1);
-    g_tt.course[day][period][TT_COURSE_MAX - 1] = '\0';
+    if (week < 1)  week = 1;
+    if (week > 99) week = 99;
+    g_tt.week = week;
 }
 
-/* ── 画框架：网格线 + 表头 + 节次名 ─────────────────────────────────────────*/
-void TT_DrawFrame(void)
+/* 两个时间段是否重叠（同一天且节次区间相交，区间按开区间处理）*/
+static int span_overlap(int day_a, int per_a, int span_a,
+                        int day_b, int per_b, int span_b)
 {
-    /* ① 先整屏清成白底 */
-    EPD_Clear(1);
+    if (day_a != day_b) return 0;
+    return (per_b < per_a + span_a) && (per_a < per_b + span_b);
+}
 
-    /* ② 反白（强调表头）：首行 + 首列填黑。
-     *    注意两块的 y 范围不重叠（首列从 TT_HEAD_H 开始），
-     *    交叉格只属于首行，不会重复涂。 */
-    EPD_FillRect(0, 0, EPD_WIDTH, TT_HEAD_H, 0);                     /* 首行条带 */
-    EPD_FillRect(0, TT_HEAD_H, TT_LEFT_W, EPD_HEIGHT - TT_HEAD_H, 0);/* 首列条带 */
+int TT_AddCourse(uint8_t day, uint8_t period, uint8_t span,
+                 const char *name, const char *place)
+{
+    /* 参数校验：越界或超容量直接拒绝（调用方看返回值）*/
+    if (day >= TT_DAYS || period >= TT_PERIODS) return 0;
+    if (span < 1) span = 1;
+    if (period + span > TT_PERIODS) return 0;
+    if (g_tt.count >= TT_MAX_COURSES) return 0;
 
-    /* ③ 网格线：白线画在黑底上，才能看出分隔（反白区内的线要用白色）*/
-    /* 竖线：左侧列右边界 + 每天分隔线 */
-    EPD_DrawVLine(TT_LEFT_W, 0, EPD_HEIGHT, 1);        /* 黑底上画白线 */
-    for (int i = 1; i < TT_DAYS; i++) {
-        int x = TT_LEFT_W + i * TT_CELL_W;
-        /* 首行区域内的线段用白色（因为在黑底上），其余用黑色 */
+    /* 冲突检测：同一时段只能有一门课 */
+    for (int i = 0; i < g_tt.count; i++) {
+        const Course_t *o = &g_tt.items[i];
+        if (span_overlap(day, period, span, o->day, o->period, o->span)) return 0;
+    }
+
+    Course_t *c = &g_tt.items[g_tt.count++];
+    c->day    = day;
+    c->period = period;
+    c->span   = span;
+    strncpy(c->name,  name  ? name  : "", TT_COURSE_MAX - 1);
+    c->name[TT_COURSE_MAX - 1]  = '\0';
+    strncpy(c->place, place ? place : "", TT_PLACE_MAX  - 1);
+    c->place[TT_PLACE_MAX - 1]  = '\0';
+    return 1;
+}
+
+
+/* 第 day 天、bound 处的横隔线是否被跨节课程盖住（盖住则该段线不画，
+ * 气泡才能上下连成一片）。bound 是「第几条横线」，取值 1..TT_PERIODS-1。*/
+static int span_covered(int day, int bound)
+{
+    for (int i = 0; i < g_tt.count; i++) {
+        const Course_t *c = &g_tt.items[i];
+        if (c->day == day && bound > c->period && bound < c->period + c->span)
+            return 1;
+    }
+    return 0;
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ② 框架绘制
+ * ═══════════════════════════════════════════════════════════════════════════*/
+
+/* 画网格线。竖线全高，横线逐列判断（跨节处断开）。*/
+static void draw_grid(void)
+{
+    /* 竖线：左列右边界 + 每天的分隔线。首行区域内是黑底，用白线。*/
+    EPD_DrawVLine(TT_LEFT_W, 0, EPD_HEIGHT, 1);
+    for (int d = 1; d < TT_DAYS; d++) {
+        int x = TT_LEFT_W + d * TT_CELL_W;
         EPD_DrawVLine(x, 0, TT_HEAD_H, 1);
         EPD_DrawVLine(x, TT_HEAD_H, EPD_HEIGHT - TT_HEAD_H, 0);
     }
 
-    /* 横线：表头下边界 + 每节分隔线（所有横向分隔线都在白底区，用黑色）*/
-    EPD_DrawHLine(0, TT_HEAD_H, EPD_WIDTH, 1);         /* 首行/首列交界，白线更清晰 */
-    for (int i = 1; i < TT_PERIODS; i++) {
-        int y = TT_HEAD_H + i * TT_CELL_H;
-        EPD_DrawHLine(TT_LEFT_W, y, EPD_WIDTH - TT_LEFT_W, 0);  /* 内容区黑线 */
-        EPD_DrawHLine(0, y, TT_LEFT_W, 1);                      /* 首列黑底上白线 */
-    }
-
-    /* ④ 表头文字：星期。反白 → 白字(color=1)，居中于每列 */
-    for (int d = 0; d < TT_DAYS; d++) {
-        int tw = 2 * FONT_ASCII_ADV + FONT_ASCII_W;   /* 3 字符实际宽度 */
-        int cx = TT_LEFT_W + d * TT_CELL_W + (TT_CELL_W - tw) / 2;
-        int cy = (TT_HEAD_H - FONT_ASCII_H) / 2;
-        if (cy < 0) cy = 0;                        /* 表头太矮时贴顶 */
-        EPD_DrawString(cx, cy, kDayName[d], 1);
-    }
-
-    /* ⑤ 行头文字：节次。反白 → 白字(color=1)，居中于左侧列 */
-    for (int p = 0; p < TT_PERIODS; p++) {
-        int tw2 = 2 * FONT_ASCII_ADV + FONT_ASCII_W;   /* 3 字符实际宽度 */
-        int cx = (TT_LEFT_W - tw2) / 2;
-        if (cx < 1) cx = 1;                        /* 列太窄时贴左，防画到屏外 */
-        int cy = TT_HEAD_H + p * TT_CELL_H + (TT_CELL_H - FONT_ASCII_H) / 2;
-        EPD_DrawString(cx, cy, kPeriodName[p], 1);
+    /* 横线：表头下边界 + 每节分隔线 */
+    EPD_DrawHLine(0, TT_HEAD_H, EPD_WIDTH, 1);
+    for (int p = 1; p < TT_PERIODS; p++) {
+        int y = TT_HEAD_H + p * TT_CELL_H;
+        EPD_DrawHLine(0, y, TT_LEFT_W, 1);               /* 左列黑底上白线 */
+        for (int d = 0; d < TT_DAYS; d++) {
+            if (span_covered(d, p)) continue;            /* 被气泡盖住 → 断开 */
+            /* 左右各留 1px，避免压到竖线 */
+            EPD_DrawHLine(TT_LEFT_W + d * TT_CELL_W + 1, y, TT_CELL_W - 1, 0);
+        }
     }
 }
 
-/* ── 把课程名填进格子（每格最多画 N 行，超长截断） ─────────────────────────
- * ★ 关键：容量用 FONT_ASCII_ADV（步长 = 字宽 + 字距）算，不是字宽 ——
- *   用字宽算会让最后一列压线、溢出到相邻格。
- * -------------------------------------------------------------------------*/
-void TT_DrawContent(void)
+/* 在反白区域里居中画一行白字（表头/行头共用）。
+ * area_x/area_w 是可用区域；宽高都按实际文字算，避免各写一套公式。*/
+static void draw_header_cell(int area_x, int area_w, int area_y, int area_h,
+                             const char *text)
 {
+    TL_Lines lines;
+    int len = (int)strlen(text);
+    TL_Wrap(text, len, area_w, 1, &lines);               /* 表头都是一行，不折 */
+    if (lines.count == 0) return;
+
+    int cx = area_x + area_w / 2;                        /* 水平居中 */
+    int cy = area_y + (area_h - FONT_CN_H) / 2;          /* 垂直居中 */
+    if (cy < area_y) cy = area_y;
+
+    /* 反白区 → 白字：color=1 通过 ctx 传给回调 */
+    TL_DrawLine(text, &lines, 0, cx, cy, draw_glyph, (void *)(uintptr_t)1);
+}
+
+/* 左上角：显示「N 周」（如「13周」）。缩写是为了两位数周次也能宽松放下
+ * —— 该格仅 52x20px，「第13周」会有 51px 贴边。*/
+static void draw_week_badge(int week)
+{
+    if (week < 1)  week = 1;
+    if (week > 99) week = 99;
+
+    char buf[16];
+    snprintf(buf, sizeof(buf), "%d周", week);
+    draw_header_cell(0, TT_LEFT_W, 0, TT_HEAD_H, buf);
+}
+
+void TT_DrawFrame(void)
+{
+    /* ① 白底 */
+    EPD_Clear(1);
+
+    /* ② 反白条带：首行 + 首列（两块 y 不重叠，交叉格只算首行）*/
+    EPD_FillRect(0, 0, EPD_WIDTH, TT_HEAD_H, 0);
+    EPD_FillRect(0, TT_HEAD_H, TT_LEFT_W, EPD_HEIGHT - TT_HEAD_H, 0);
+
+    /* ③ 网格线 */
+    draw_grid();
+
+    /* ④ 左上角：第几周（占用表头与左列的交叉格，原本是空白）*/
+    draw_week_badge(g_tt.week);
+
+    /* ⑤ 表头文字：星期（每列居中）*/
     for (int d = 0; d < TT_DAYS; d++) {
-        for (int p = 0; p < TT_PERIODS; p++) {
-            const char *name = g_tt.course[d][p];
-            if (name[0] == '\0') continue;         /* 空 = 没课 */
+        draw_header_cell(TT_LEFT_W + d * TT_CELL_W, TT_CELL_W, 0, TT_HEAD_H,
+                         kDayName[d]);
+    }
 
-            int cell_x = TT_LEFT_W + d * TT_CELL_W;
-            int cell_y = TT_HEAD_H + p * TT_CELL_H;
+    /* ⑤ 行头文字：节次（左列居中）*/
+    for (int p = 0; p < TT_PERIODS; p++) {
+        draw_header_cell(0, TT_LEFT_W, TT_HEAD_H + p * TT_CELL_H, TT_CELL_H,
+                         kPeriodName[p]);
+    }
+}
 
-            /* 本格容量：左右各留 2px 边距 */
-            int max_chars = (TT_CELL_W - 4) / FONT_ASCII_ADV;
-            int max_lines = (TT_CELL_H - 4) / FONT_ASCII_H;
-            if (max_chars < 1) max_chars = 1;
-            if (max_lines < 1) max_lines = 1;
 
-            int len = (int)strlen(name);
-            int line = 0;
-            for (int off = 0; off < len && line < max_lines; off += max_chars, line++) {
-                int n = len - off;
-                if (n > max_chars) n = max_chars;
+/* ══════════════════════════════════════════════════════════════════════════
+ * ③ 气泡绘制
+ * ═══════════════════════════════════════════════════════════════════════════*/
 
-                /* 逐字符画，超出本格右边界就停止（双保险，防越界） */
-                int cx = cell_x + 2;
-                int cy = cell_y + 2 + line * FONT_ASCII_H;
-                for (int k = 0; k < n; k++) {
-                    if (cx + FONT_ASCII_W > cell_x + TT_CELL_W - 2) break;
-                    EPD_DrawChar(cx, cy, (uint8_t)name[off + k], 0);
-                    cx += FONT_ASCII_ADV;
-                }
+/* 绘制回调：把码点画到显存。ctx 传 color（0=黑 1=白）。*/
+static void draw_glyph(uint16_t code, int x, int y, void *ctx)
+{
+    uint8_t color = (uint8_t)(uintptr_t)ctx;
+    if (code < 0x80) EPD_DrawChar(x, y, (uint8_t)code, color);
+    else             EPD_DrawChinese(x, y, code, color);
+}
+
+/* 圆角矩形边框：四边直线 + 四角圆弧（1bit 屏用切角模拟圆角）*/
+static void draw_round_frame(int x, int y, int w, int h, int r, uint8_t color)
+{
+    if (r > w / 2) r = w / 2;
+    if (r > h / 2) r = h / 2;
+
+    EPD_DrawHLine(x + r, y, w - 2 * r, color);
+    EPD_DrawHLine(x + r, y + h - 1, w - 2 * r, color);
+    EPD_DrawVLine(x, y + r, h - 2 * r, color);
+    EPD_DrawVLine(x + w - 1, y + r, h - 2 * r, color);
+
+    for (int i = 0; i < r; i++) {
+        for (int j = 0; j < r; j++) {
+            int dx = r - j, dy = r - i;
+            int d2 = dx * dx + dy * dy;
+            if (d2 <= r * r + r && d2 > r * r - r) {     /* 只取最外圈 */
+                EPD_DrawPixel(x + j,             y + i,             color);
+                EPD_DrawPixel(x + w - 1 - j,     y + i,             color);
+                EPD_DrawPixel(x + j,             y + h - 1 - i,     color);
+                EPD_DrawPixel(x + w - 1 - j,     y + h - 1 - i,     color);
             }
         }
     }
 }
 
-/* ── 完整显示：画 + 刷新 + 睡眠 ─────────────────────────────────────────────*/
+/* 地点只保留房间号数字（「主楼302」→「302」）。
+ * 楼名占地又占行，而同一门课的楼通常固定，数字才是有用信息。
+ * 没有数字（「操场」）原样返回；空串返回占位符。*/
+static const char *place_room(const char *place, char *buf, int buf_size)
+{
+    if (place[0] == '\0') return kNoPlace;
+
+    const char *p = place;
+    while (*p && !(*p >= '0' && *p <= '9')) p++;    /* 跳过楼名 */
+    if (*p == '\0') return place;                   /* 没数字：原样显示 */
+
+    strncpy(buf, p, buf_size - 1);
+    buf[buf_size - 1] = '\0';
+    return buf;
+}
+
+/* 把课程名 + 地点排进气泡的可用区。
+ * 行数按「实际需要」分配：先给课程名，剩下的高度给地点（至少 1 行）。*/
+static void draw_bubble_text(const char *name, const char *place,
+                             int tx, int ty, int tw, int rows_fit)
+{
+    TL_Lines name_l, place_l;
+
+    /* 课程名：最多 TT_NAME_LINES 行，但至少给地点留 1 行 */
+    int name_max = rows_fit - 1;
+    if (name_max > TT_NAME_LINES) name_max = TT_NAME_LINES;
+    if (name_max < 1) name_max = 1;
+    TL_Wrap(name, (int)strlen(name), tw, name_max, &name_l);
+
+    /* 地点：用剩下的行数 */
+    int place_max = rows_fit - name_l.count;
+    if (place_max < 1) place_max = 1;
+    if (place_max > TT_PLACE_LINES) place_max = TT_PLACE_LINES;
+    TL_Wrap(place, (int)strlen(place), tw, place_max, &place_l);
+
+    /* 整块垂直居中 */
+    int text_h = name_l.count * FONT_CN_H + (place_l.count ? FONT_CN_H + 2 : 0);
+    int y0 = ty + (rows_fit * FONT_CN_H - text_h) / 2;
+    if (y0 < ty) y0 = ty;
+
+    int cx = tx + tw / 2;                            /* 文字区水平中心 */
+
+    for (int i = 0; i < name_l.count; i++) {
+        TL_DrawLine(name, &name_l, i, cx, y0 + i * FONT_CN_H,
+                    draw_glyph, (void *)(uintptr_t)0);
+    }
+    int place_y = y0 + name_l.count * FONT_CN_H + 2;
+    for (int i = 0; i < place_l.count; i++) {
+        TL_DrawLine(place, &place_l, i, cx, place_y + i * FONT_CN_H,
+                    draw_glyph, (void *)(uintptr_t)0);
+    }
+}
+
+/* 画一个课程气泡：白底 + 圆角边框 + 左侧色条 + 居中文字。
+ * 高度覆盖 span 个节次，跨节课程自然形成一块长气泡。*/
+static void draw_bubble(const Course_t *c)
+{
+    /* 气泡外框：横向占满本列（留 gap 边距），纵向跨 span 个节次 */
+    int bx = TT_LEFT_W + c->day * TT_CELL_W + TT_BUBBLE_GAP;
+    int by = TT_HEAD_H  + c->period * TT_CELL_H + TT_BUBBLE_GAP;
+    int bw = TT_CELL_W - 2 * TT_BUBBLE_GAP;
+    int bh = c->span * TT_CELL_H - 2 * TT_BUBBLE_GAP;
+    if (bw < 12 || bh < 12) return;                  /* 太小，不画 */
+
+    draw_round_frame(bx, by, bw, bh, TT_BUBBLE_R, 0);
+
+    /* 左侧色条：贴边框内侧，上下让出圆角 */
+    EPD_FillRect(bx + 1, by + TT_BUBBLE_R,
+                 TT_BUBBLE_BAR_W, bh - 2 * TT_BUBBLE_R, 0);
+
+    /* 文字可用区：色条右侧 + 1px 间隙，右/下留 2px 内边距 */
+    int tx = bx + 1 + TT_BUBBLE_BAR_W + 1;
+    int tw = (bx + bw - 1 - 2) - tx;
+    int rows_fit = (bh - 2) / FONT_CN_H;
+    if (tw < 8 || rows_fit < 1) return;
+    if (tw > TT_TEXT_MAX) tw = TT_TEXT_MAX;          /* 折行缓冲上限 */
+
+    /* 地点转成房间号，再交给排版 */
+    char room_buf[TT_PLACE_MAX];
+    const char *room = place_room(c->place, room_buf, sizeof(room_buf));
+
+    draw_bubble_text(c->name, room, tx, by, tw, rows_fit);
+}
+
+void TT_DrawContent(void)
+{
+    for (int i = 0; i < g_tt.count; i++) {
+        draw_bubble(&g_tt.items[i]);
+    }
+}
+
+
+/* ══════════════════════════════════════════════════════════════════════════
+ * ④ 对外接口
+ * ═══════════════════════════════════════════════════════════════════════════*/
+
 void TT_Show(void)
 {
     TT_DrawFrame();

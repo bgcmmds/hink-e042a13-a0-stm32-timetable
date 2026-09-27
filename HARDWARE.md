@@ -92,7 +92,10 @@ CubeMX **重新生成会覆盖 `main.c` 的 USER CODE 内容**（会被清空，
    ```c
    /* USER CODE BEGIN 2 */
    LOG_Init();
-   TT_Demo();
+   EPD_Init();
+   TT_Clear();
+   MyCourses_Load();
+   TT_Show();
    /* USER CODE END 2 */
    ```
 2. **`CMakeLists.txt`** —— `target_sources` 段里的用户源文件列表（CubeMX 会重置成空）。
@@ -120,14 +123,15 @@ openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
 
 期望输出：`** Verified OK **`。
 
-> 若 `cmake` 报 `CMakePresets.json` 找不到编译器，把 `CMakePresets.json` 里的
-> 工具链路径改成你本机 arm-none-eabi-gcc 的位置。
+> 若 `cmake` 报找不到编译器，说明 `arm-none-eabi-gcc` 不在 PATH 里。
+> 把工具链的 `bin` 目录加进 PATH 即可 —— `cmake/gcc-arm-none-eabi.cmake`
+> 用的是标准前缀 `arm-none-eabi-`，不需要改成绝对路径。
 
 ---
 
 ## 四、自检：4 张测试画面
 
-`EPD_TestPattern()`（在 `epd_test.c`）会依次刷 4 张画面，每张停 3 秒，
+`EPD_TestPattern()`（在 `Core/Src/epd.c`）会依次刷 4 张画面，每张停 3 秒，
 用来快速验证接线、极性、坐标、显存对齐：
 
 | 顺序 | 画面                   | 验证什么               | 异常现象 → 可能原因               |
@@ -137,7 +141,7 @@ openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
 | ③   | 四角 + 中心黑块 + 外框 | 坐标系 / 400×300 边界 | 偏位/缺角 → 分辨率或 RAM 窗口设置 |
 | ④   | 竖条纹                 | 显存位序               | 变横纹 → Y 方向行对齐问题         |
 
-在 `main()` 里把 `TT_Demo()` 换成 `EPD_TestPattern()` 即可运行自检。
+在 `main()` 里把 `TT_Show()` 换成 `EPD_TestPattern()` 即可运行自检。
 
 > 4.2" 全刷一次约 **2~4 秒**，属正常，不要当成死机。
 
@@ -145,13 +149,16 @@ openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
 
 ## 五、串口诊断
 
-`EPD_Diag()`（在 `epd_test.c`）通过 USART1 逐条报告：
+`EPD_Diag()`（在 `debug/epd_test.c`，**默认不编译**）通过 USART1 逐条报告：
 
 - 各控制引脚的实际电平
 - 每步 BUSY 等待的实际耗时（超时说明 BUSY 一直为高）
 - SPI 发送是否成功
 
 屏不亮时，先用它定位是**硬件问题**还是**代码问题**。
+
+启用方式：`cmake --preset Debug -DENABLE_DEBUG_TOOLS=ON` 后重新编译，
+然后在 `main.c` 里调用 `EPD_Diag()`。详见 [STRUCTURE.md](STRUCTURE.md)。
 
 ---
 
@@ -161,16 +168,34 @@ openocd -f interface/cmsis-dap.cfg -f target/stm32f1x.cfg \
 Core/
 ├── Src/
 │   ├── main.c              # 主流程（CubeMX 生成 + USER CODE）
-│   ├── epd.c               # ★ 墨水屏驱动：初始化 / 显存绘图 / 文字 / 刷新
+│   ├── my_courses.c        # ★ 课表数据（改课表改这里）
+│   ├── timetable.c         # ★ 课表绘制：网格 / 气泡 / 周次
+│   ├── textlayout.c        # UTF-8 文本测量与折行
+│   ├── epd.c               # ★ 墨水屏驱动：初始化 / 显存绘图 / 刷新
 │   ├── font.c              # ASCII 8x16 字库
-│   ├── timetable.c         # ★ 课程表布局与绘制（业务模块）
-│   ├── timetable_demo.c    # 演示数据（替换成你自己的课表）
+│   ├── font_cn.c           # 中文字库（自动生成，勿手改）
 │   ├── log.c               # 串口调试打点
-│   ├── epd_test.c          # 硬件自检 / 诊断（正式使用可删）
 │   ├── spi.c / gpio.c / usart.c   # 外设配置（CubeMX 生成）
 │   └── stm32f1xx_hal_msp.c / stm32f1xx_it.c
 └── Inc/                    # 对应头文件
+
+debug/                      # 诊断工具（默认不编译）
+tools/                      # PC 端工具：网页编辑器 + 字库生成
 ```
 
-**分层**：`font.c`（字模）→ `epd.c`（画点/线/框/字/刷新）→ `timetable.c`（课表业务）。
-改布局不动驱动，改驱动不动布局。
+**分层**（依赖严格单向向下）：
+
+```
+my_courses.c   课表数据
+   ↓
+timetable.c    课表业务
+   ↓
+textlayout.c   文本排版（纯计算，不碰显存）
+epd.c          屏驱动
+   ↓
+font*.c        字模数据（不依赖任何东西）
+```
+
+改布局不动驱动，改驱动不动业务，换课表只改一个文件。
+
+完整的目录说明与工具用法见 [README.md](README.md) 与 [STRUCTURE.md](STRUCTURE.md)。

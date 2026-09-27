@@ -25,7 +25,7 @@
 #define FONT_ASCII_BYTES_PER_CHAR  16   /* 每字符字节数 */
 
 /* 字符前进步长 = 字模宽 + 字距。
- * 字距 1px：字模本身占满 8px，不留空隙相邻字符会粘连。
+ * 字距 1px：字模本身占满 8px，不留空隙会「粘在一起」（实测反馈）。
  * 排字/算每行容量时都用这个值，不要直接用 FONT_ASCII_W。 */
 #define FONT_ASCII_SPACING  1
 #define FONT_ASCII_ADV      (FONT_ASCII_W + FONT_ASCII_SPACING)   /* = 9 */

@@ -3,15 +3,18 @@
   * @file    epd.c
   * @brief   4.2" 墨水屏驱动（400x300 黑白）
   *
-  *  控制器：SSD1619A（400x300，1bpp 黑白）
+  *  屏：HINK-E042A13-A0（24pin FPC，单 IC，SSD1619A）
   *
   *  ★ 命令集说明（重要，不要按 SSD1619/UC8176 写）：
   *    SSD1619A 的命令映射是 SSD1680 系列那一套，**不是**早期 SSD1619/UC8176 的。
   *    例如：0x12=SW RESET（不是刷新）、0x24=Write RAM(BW)、0x22=Display Update
   *    Control 2、0x20=Master Activation、0x10=Deep Sleep。
   *
-  *  依据：SSD1619A 数据手册 §7 命令表，逐条核对
-  *    0x11 / 0x12 / 0x20 / 0x21 / 0x22 / 0x24 / 0x26 / 0x3C / 0x44 / 0x45 / 0x4E / 0x4F
+  *  依据：
+  *    1) SSD1619A 数据手册 §7 命令表
+  *       —— 已逐条核对 0x11/0x12/0x20/0x21/0x22/0x24/0x26/0x3C/0x44/0x45/0x4E/0x4F
+  *    2) 已实测点亮同规格 4.2" 屏（GDEH042Z96 兼容）的开源驱动实现，
+  *       命令用法与手册命令表逐条吻合。
   *
   *  BUSY 语义：**高电平 = 忙, 低电平 = 空闲**
   *    手册 §8："BUSY pad will output high during operation"
@@ -19,6 +22,7 @@
   */
 #include "epd.h"
 #include "font.h"      /* ASCII 8x16 字库 */
+#include "font_cn.h"   /* 16x16 中文字库（tools/font_export.py 生成） */
 #include "log.h"       /* 串口打点 */
 #include "main.h"      /* CubeMX 生成的引脚宏（EPD_*_Pin / EPD_*_GPIO_Port） */
 #include <string.h>
@@ -27,12 +31,15 @@
 extern SPI_HandleTypeDef hspi1;
 
 /* ── 命令定义（SSD1619A 手册 §7 命令表）─────────────────────────────────────*/
+#define EPD_CMD_DRIVER_OUTPUT_CTRL   0x01   /* Driver Output control  (MUX/扫描方向) */
 #define EPD_CMD_DATA_ENTRY_MODE      0x11   /* Data Entry mode setting */
 #define EPD_CMD_SW_RESET             0x12   /* SW RESET */
 #define EPD_CMD_MASTER_ACTIVATION    0x20   /* Master Activation */
+#define EPD_CMD_DISPLAY_UPDATE_CTRL1 0x21   /* Display Update Control 1 */
 #define EPD_CMD_DISPLAY_UPDATE_CTRL2 0x22   /* Display Update Control 2（刷新触发） */
 #define EPD_CMD_WRITE_RAM_BW         0x24   /* Write RAM (BW)  1=白 0=黑 */
 #define EPD_CMD_WRITE_RAM_RED        0x26   /* Write RAM (RED) 黑白用法填 0x00 */
+#define EPD_CMD_BORDER_WAVEFORM      0x3C   /* Border Waveform Control */
 #define EPD_CMD_SET_RAM_X_RANGE      0x44   /* Set RAM X address start/end */
 #define EPD_CMD_SET_RAM_Y_RANGE      0x45   /* Set RAM Y address start/end */
 #define EPD_CMD_SET_RAM_X_COUNTER    0x4E   /* Set RAM X address counter */
@@ -116,7 +123,7 @@ static void EPD_SetCursor(uint16_t xs, uint16_t ys)
 
 /* ── 初始化 ────────────────────────────────────────────────────────────────
  * 采用「极简初始化」：只做 SW RESET + 数据入口模式 + 窗口/光标。
- * 升压与波形全部使用 IC 的 OTP 出厂默认值 —— 该配置在实际硬件上可正常显示，
+ * 升压与波形全部使用 IC 的 OTP 出厂默认值 —— 参考项目实测这样即可正常显示，
  * 且避免了乱写 LUT 导致红闪/花屏。若后续显示异常，再考虑补 0x0C/0x3C 等配置。
  * -------------------------------------------------------------------------*/
 void EPD_Init(void)
@@ -128,7 +135,7 @@ void EPD_Init(void)
     EPD_SendCommand(EPD_CMD_SW_RESET);
     EPD_ReadBusy();
 
-    /* 数据入口模式：0x03 = X 递增、Y 递增（与显存行优先排布一致）*/
+    /* 数据入口模式：0x03 = X 递增、Y 递增（与我们显存的排布一致）*/
     EPD_SendCommand(EPD_CMD_DATA_ENTRY_MODE);
     EPD_SendData(0x03);
 
@@ -145,7 +152,7 @@ void EPD_Init(void)
 /* ── 把显存推到屏上并刷新 ────────────────────────────────────────────────────*/
 void EPD_Display(void)
 {
-    /* BW RAM：显存内容（1=白 0=黑）*/
+    /* BW RAM：我们的显存（1=白 0=黑）*/
     EPD_SendCommand(EPD_CMD_WRITE_RAM_BW);
     for (uint32_t i = 0; i < EPD_BUF_SIZE; i++) {
         EPD_SendData(epd_buffer[i]);
@@ -171,11 +178,6 @@ void EPD_Sleep(void)
 {
     EPD_SendCommand(EPD_CMD_DEEP_SLEEP);
     EPD_SendData(0x01);
-}
-
-uint8_t* EPD_GetBuffer(void)
-{
-    return epd_buffer;
 }
 
 /* ── 显存绘图 ──────────────────────────────────────────────────────────────*/
@@ -258,30 +260,35 @@ int16_t EPD_DrawChar(int16_t x, int16_t y, uint8_t ch, uint8_t color)
     return FONT_ASCII_W;
 }
 
-int16_t EPD_DrawString(int16_t x, int16_t y, const char *str, uint8_t color)
-{
-    int16_t x0 = x;
+/* ── 中文字库绘制 ────────────────────────────────────────────────────────────
+ * 点阵格式与 font.c 相同：每字节一列 8 像素、bit0 在上。汉字 16x16 = 32 字节
+ * （上半 16 列 + 下半 16 列）。
+ * 注：文本的测量/折行/居中由 textlayout.c 负责，驱动层只管「把码点画到坐标」。
+ * -------------------------------------------------------------------------*/
 
-    while (*str) {
-        if (*str == '\n') {                  /* 显式换行 */
-            x = x0;
-            y += FONT_ASCII_H;
-            str++;
-            continue;
-        }
-        /* 自动换行：注意判断用「字宽」而非「步长」，避免行尾多留空隙 */
-        if (x + FONT_ASCII_W > EPD_WIDTH) {
-            x = x0;
-            y += FONT_ASCII_H;
-        }
-        if (y + FONT_ASCII_H > EPD_HEIGHT) { /* 超出屏底，停 */
-            break;
-        }
-        EPD_DrawChar(x, y, (uint8_t)*str, color);
-        x += FONT_ASCII_ADV;                 /* 字宽 + 1px 字距 */
-        str++;
+/* 画一个「缺字」提示框：空心方框，让人一眼看出字库里没有这个字 */
+static void EPD_DrawMissingGlyph(int16_t x, int16_t y, uint8_t color)
+{
+    EPD_DrawRect(x, y, FONT_CN_W, FONT_CN_H, color);
+}
+
+int16_t EPD_DrawChinese(int16_t x, int16_t y, uint16_t code, uint8_t color)
+{
+    const uint8_t *dots = FONT_GetChinese(code);
+    if (dots == 0) {
+        EPD_DrawMissingGlyph(x, y, color);
+        return FONT_CN_W;
     }
-    return y + FONT_ASCII_H;                 /* 返回下一行的 y */
+
+    for (int16_t col = 0; col < FONT_CN_W; col++) {
+        uint8_t byte_top = dots[col];                  /* 上半 8 行（列 0..15） */
+        uint8_t byte_bot = dots[col + FONT_CN_W];      /* 下半 8 行（列 16..31） */
+        for (int16_t row = 0; row < 8; row++) {
+            if (byte_top & (1 << row)) EPD_DrawPixel(x + col, y + row, color);
+            if (byte_bot & (1 << row)) EPD_DrawPixel(x + col, y + 8 + row, color);
+        }
+    }
+    return FONT_CN_W;
 }
 
 /* ── 硬件自检：4 张测试画面 ──────────────────────────────────────────────────

@@ -1,6 +1,12 @@
 # 统一换行符：仓库内一律 LF，避免跨平台 diff 噪音
 * text=auto eol=lf
 
+# ★ Windows 批处理必须是 CRLF。
+#   如果跟着上面的规则变成 LF，cmd.exe 会把行粘在一起解析，
+#   导致 cd 不执行、命令乱掉（实际踩过这个坑）。
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
 # 二进制文件不做换行转换
 *.png binary
 *.jpg binary

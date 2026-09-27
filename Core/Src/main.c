@@ -26,6 +26,7 @@
 /* USER CODE BEGIN Includes */
 #include "epd.h"
 #include "log.h"
+#include "my_courses.h"
 #include "timetable.h"
 /* USER CODE END Includes */
 
@@ -97,9 +98,18 @@ int main(void)
   LOG_Init();
   LOG("\r\n\r\n### TIMETABLE BOOT ###\r\n");
 
-  /* 课程表演示：5 天 x 5 大节网格 + 示例课程。
-   * 换成你自己的数据：改 timetable_demo.c，或替换为读 Flash / 收串口后调 TT_Show()。 */
-  TT_Demo();
+  /* ── 显示课程表 ──────────────────────────────────────────────────────
+   * 流程固定三步：
+   *   ① EPD_Init()        初始化屏（复位 + 清显存）
+   *   ② MyCourses_Load()  填课表数据（改 Core/Src/my_courses.c）
+   *   ③ TT_Show()         绘制 + 刷新 + 进睡眠
+   * 墨水屏断电保持画面，所以刷一次就行了，不需要在循环里反复刷。 */
+  EPD_Init();
+  TT_Clear();
+  MyCourses_Load();
+  LOG(">>> 开始绘制课程表\r\n");
+  TT_Show();
+  LOG(">>> 绘制完成，屏已睡眠\r\n");
 
   /* USER CODE END 2 */
 
@@ -111,8 +121,9 @@ int main(void)
 
     /* USER CODE BEGIN 3 */
 
-    /* 主循环：当前为空闲。
-     * 后续可在此放动态刷新逻辑：读数据 → 绘制 → EPD_Display() → EPD_Sleep()。 */
+    /* 纯显示固件：静态画面，墨水屏断电保持，无需循环刷新。
+     * 要接实时更新（切周次/日期变化）在这里加「检测到变化才重绘」，
+     * 然后同样调用 TT_Show()。 */
     HAL_Delay(1000);
 
     /* USER CODE END 3 */

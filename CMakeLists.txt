@@ -34,6 +34,16 @@ enable_language(C ASM)
 # Create an executable object type
 add_executable(${CMAKE_PROJECT_NAME})
 
+# ── 调试工具开关 ──────────────────────────────────────────────────────────
+# 关闭时（默认）debug/ 目录下的代码不参与编译，正式固件不含诊断代码。
+# 需要排查屏问题时：cmake --preset Debug -DENABLE_DEBUG_TOOLS=ON
+option(ENABLE_DEBUG_TOOLS "编译 debug/ 下的诊断/自检工具" OFF)
+if(ENABLE_DEBUG_TOOLS)
+    message("Debug tools: ON  (debug/ 目录参与编译)")
+else()
+    message("Debug tools: OFF (正式固件，不含诊断代码)")
+endif()
+
 # Add STM32CubeMX generated sources
 add_subdirectory(cmake/stm32cubemx)
 
@@ -44,17 +54,30 @@ target_link_directories(${CMAKE_PROJECT_NAME} PRIVATE
 
 # Add sources to executable
 target_sources(${CMAKE_PROJECT_NAME} PRIVATE
-    # ---------------------------------------------------------------------
-    # 用户自定义源文件（CubeMX 不会覆盖此段；若重新生成代码后发现这里被清空，
-    # 把下面几行补回即可）
-    # ---------------------------------------------------------------------
-    Core/Src/epd.c            # 墨水屏驱动（SSD1619A / SSD1680 命令集）
-    Core/Src/font.c           # ASCII 8x16 字库
-    Core/Src/timetable.c      # 课程表布局与绘制（业务模块）
-    Core/Src/timetable_demo.c # 演示数据（替换成你自己的课表）
-    Core/Src/log.c            # 串口调试打点
-    Core/Src/epd_test.c       # 硬件自检 / 诊断（正式使用可删）
+    # Add user sources here
+    # ── 应用代码（用户自己写的，按分层排列）──
+    #   font / font_cn   字库数据（不依赖任何东西）
+    #   textlayout       文本测量与折行（纯计算，不碰显存）
+    #   epd              屏驱动（依赖 SPI + GPIO）
+    #   timetable        课表业务（只用 epd 的画图接口）
+    #   my_courses       课表数据（换成你自己的课表）
+    #   log              串口打点
+    Core/Src/font.c
+    Core/Src/font_cn.c
+    Core/Src/textlayout.c
+    Core/Src/epd.c
+    Core/Src/timetable.c
+    Core/Src/my_courses.c
+    Core/Src/log.c
 )
+
+# ── 调试工具（默认不编译，见文件顶部的 ENABLE_DEBUG_TOOLS）──
+if(ENABLE_DEBUG_TOOLS)
+    target_sources(${CMAKE_PROJECT_NAME} PRIVATE
+        debug/epd_test.c
+    )
+    target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE debug)
+endif()
 
 # Add include paths
 target_include_directories(${CMAKE_PROJECT_NAME} PRIVATE

@@ -1,0 +1,199 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>课程表编辑器</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <span class="logo">课</span>
+    <div>
+      <h1>课程表编辑器</h1>
+      <p class="sub" id="rootPath">—</p>
+    </div>
+  </div>
+
+  <div class="topbar-actions">
+    <div class="week-ctl">
+      <label for="weekInput">周次</label>
+      <div class="stepper">
+        <button type="button" id="weekMinus" title="上一周">−</button>
+        <input type="number" id="weekInput" min="1" max="99" value="1">
+        <button type="button" id="weekPlus" title="下一周">+</button>
+      </div>
+    </div>
+    <button class="btn ghost" id="btnSettings" title="工具链设置">设置</button>
+    <button class="btn ghost" id="btnReload" title="放弃改动，重新从磁盘载入">重新载入</button>
+    <button class="btn primary" id="btnSave">保存</button>
+  </div>
+</header>
+
+<main class="layout">
+
+  <!-- ══ 左：5×5 网格 ══════════════════════════════════════ -->
+  <section class="panel grid-panel">
+    <div class="panel-head">
+      <h2>课表网格</h2>
+      <div class="hint">
+        点空格子 <b>添加</b>，点已有课程 <b>编辑</b>，拖动课程可调整跨度
+      </div>
+    </div>
+
+    <div class="grid-wrap">
+      <table class="tt-grid" id="grid">
+        <!-- 表头 + 网格由 JS 生成 -->
+      </table>
+    </div>
+
+    <div class="legend">
+      <span class="lg"><i class="sw sw-dot"></i>单节</span>
+      <span class="lg"><i class="sw sw-bar"></i>连堂（跨节）</span>
+      <span class="lg err" id="conflictBadge" hidden><i class="sw sw-err"></i>时间冲突</span>
+    </div>
+  </section>
+
+  <!-- ══ 右：检查 + 部署 ══════════════════════════════════ -->
+  <aside class="side">
+
+    <section class="panel">
+      <div class="panel-head"><h2>检查</h2></div>
+      <ul class="checklist" id="checklist"></ul>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h2>生成 / 部署</h2></div>
+      <p class="note" id="deployNote">
+        保存数据 → 补字库 → 生成 my_courses.c
+      </p>
+      <button class="btn deploy" id="btnDeploy">
+        <span class="deploy-ico">⚡</span>
+        <span id="deployLabel">生成代码</span>
+      </button>
+      <div class="progress" id="progress" hidden>
+        <div class="bar"><div class="bar-fill" id="barFill"></div></div>
+        <div class="stage" id="stageText">准备中…</div>
+      </div>
+    </section>
+
+  </aside>
+</main>
+
+<!-- ══ 课程编辑弹窗 ══════════════════════════════════════ -->
+<div class="modal-backdrop" id="modalBackdrop" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modalTitle">
+    <div class="modal-head">
+      <h3 id="modalTitle">添加课程</h3>
+      <button class="x" id="modalClose" aria-label="关闭">×</button>
+    </div>
+
+    <div class="modal-body">
+      <div class="field-row">
+        <label>星期</label>
+        <div class="seg" id="segDay"></div>
+      </div>
+
+      <div class="field-row">
+        <label>起始节</label>
+        <div class="seg" id="segPeriod"></div>
+      </div>
+
+      <div class="field-row">
+        <label>持续节数</label>
+        <div class="seg" id="segSpan"></div>
+        <p class="field-hint" id="spanHint"></p>
+      </div>
+
+      <div class="field-row">
+        <label for="inName">课程名</label>
+        <input type="text" id="inName" maxlength="20" placeholder="例如：高等数学">
+        <p class="field-hint" id="nameHint"></p>
+      </div>
+
+      <div class="field-row">
+        <label for="inPlace">教室</label>
+        <input type="text" id="inPlace" maxlength="10" placeholder="例如：主楼302（可留空）">
+        <p class="field-hint">屏幕气泡里只显示房间号（主楼302 → 302）</p>
+      </div>
+
+      <div class="alert" id="modalAlert" hidden></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn danger ghost" id="btnDelete" hidden>删除</button>
+      <span class="spacer"></span>
+      <button class="btn ghost" id="btnCancel">取消</button>
+      <button class="btn primary" id="btnConfirm">确定</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 设置弹窗 ══════════════════════════════════════════ -->
+<div class="modal-backdrop" id="setBackdrop" hidden>
+  <div class="modal narrow" role="dialog" aria-modal="true">
+    <div class="modal-head">
+      <h3>工具链设置</h3>
+      <button class="x" id="setClose" aria-label="关闭">×</button>
+    </div>
+    <div class="modal-body">
+      <div class="field-row">
+        <label for="setPython">Python 解释器</label>
+        <input type="text" id="setPython" spellcheck="false">
+        <p class="field-hint">用来跑 font_export.py（需要 freetype-py）</p>
+      </div>
+      <div class="field-row">
+        <label for="setFont">字体文件</label>
+        <input type="text" id="setFont" spellcheck="false">
+        <p class="field-hint">
+          生成字库用的 TTF/TTC。<b>等线</b>笔画细，16px 小字最清楚；
+          微软雅黑、黑体亦可。
+        </p>
+      </div>
+
+      <hr class="sep">
+
+      <p class="field-hint" style="margin-bottom:12px">
+        下面两项<b>可选</b>。填了网页才能一键编译/烧录；留空则只生成代码，
+        由你自己在终端编译烧录。<br>
+        命令里可用 <code>{root}</code> 代表仓库根目录。
+      </p>
+
+      <div class="field-row">
+        <label for="setBuild">编译命令</label>
+        <input type="text" id="setBuild" spellcheck="false"
+               placeholder="例如：cmake --build build/Debug">
+      </div>
+      <div class="field-row">
+        <label for="setFlash">烧录命令</label>
+        <input type="text" id="setFlash" spellcheck="false"
+               placeholder="例如：openocd -f interface/cmsis-dap.cfg -f ... ">
+      </div>
+
+      <div class="alert info" id="toolList"></div>
+    </div>
+    <div class="modal-foot">
+      <span class="spacer"></span>
+      <button class="btn ghost" id="setCancel">取消</button>
+      <button class="btn primary" id="setSave">保存设置</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══ 日志抽屉 ══════════════════════════════════════════ -->
+<div class="logbox" id="logbox" hidden>
+  <div class="log-head">
+    <span id="logTitle">输出</span>
+    <button class="x" id="logClose" aria-label="关闭">×</button>
+  </div>
+  <pre id="logText"></pre>
+</div>
+
+<!-- ══ 轻提示 ════════════════════════════════════════════ -->
+<div class="toast-wrap" id="toasts"></div>
+
+<script src="app.js"></script>
+</body>
+</html>

@@ -23,6 +23,12 @@ Drivers/
 *.uvoptx
 *.uvprojx
 
+# ---- 本地工具配置（含你机器上的路径，不要提交）----
+tools/editor_config.json
+tools/__pycache__/
+__pycache__/
+*.pyc
+
 # ---- 系统 ----
 .DS_Store
 Thumbs.db

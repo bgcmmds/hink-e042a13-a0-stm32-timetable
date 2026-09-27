@@ -10,6 +10,7 @@
 #include "main.h"
 #include <stdio.h>
 #include <stdarg.h>
+#include <string.h>
 
 /* CubeMX 配 USART1 后生成。用 extern 弱引用，避免未配串口时链接失败。*/
 extern UART_HandleTypeDef huart1;
